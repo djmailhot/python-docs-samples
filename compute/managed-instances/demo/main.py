@@ -1,19 +1,22 @@
 #!/usr/bin/python3
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from multiprocessing import Process
-from random import random
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from os import path
 from requests import get
 from re import sub
 from socket import gethostname
 from socketserver import ThreadingMixIn
 
 PORT_NUMBER = 80
-WORKING = False
 HEALTHY = True
-PROCESS = None
+
+env = Environment(
+    loader=FileSystemLoader(path.dirname(path.realpath(__file__)) + '/templates'),
+    autoescape=select_autoescape('html')
+)
 
 
-class myHandler(BaseHTTPRequestHandler):
+class request_handler(BaseHTTPRequestHandler):
     def get_zone(self):
         r = get('http://metadata.google.internal/'
                 'computeMetadata/v1/instance/zone',
@@ -32,49 +35,22 @@ class myHandler(BaseHTTPRequestHandler):
         else:
             return ''
 
-    def burn_cpu(x):
-        while True:
-            random()*random()
-
     def do_GET(self):
-        global WORKING, HEALTHY, PROCESS
+        global HEALTHY
 
         if self.path == '/makeHealthy':
             HEALTHY = True
             self.send_response(302)
             self.send_header('Location', '/')
             self.end_headers()
-            return
 
-        if self.path == '/makeUnhealthy':
+        elif self.path == '/makeUnhealthy':
             HEALTHY = False
             self.send_response(302)
             self.send_header('Location', '/')
             self.end_headers()
-            return
 
-        if self.path == '/startLoad':
-            if not WORKING:
-                PROCESS = Process(target=self.burn_cpu)
-                PROCESS.start()
-
-            WORKING = True
-            self.send_response(302)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if self.path == '/stopLoad':
-            if PROCESS.is_alive():
-                PROCESS.terminate()
-
-            WORKING = False
-            self.send_response(302)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if self.path == '/health':
+        elif self.path == '/health':
             if not HEALTHY:
                 self.send_response(500)
                 self.end_headers()
@@ -82,66 +58,22 @@ class myHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
-                self.wfile.write(
-                        '<span style="font-family: verdana; font-weight: '
-                        'bold; font-size: 40px">HTTP/1.0 200 OK</span>')
-                self.wfile.close()
-            return
+            html = env.get_template('health.jinja2').render(healthy=HEALTHY)
+            self.wfile.write(html.encode('UTF-8'))
 
-        HOSTNAME = gethostname()
-        ZONE = self.get_zone()
-        TEMPLATE = self.get_template()
+        else:
+            HOSTNAME = gethostname()
+            ZONE = self.get_zone()
+            TEMPLATE = self.get_template()
 
-        self.send_response(200 if HEALTHY else 500)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        html = '''
-<html>
-<head>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0-rc.2/css/materialize.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0-rc.2/js/materialize.min.js"></script>
-</head>
-<body>
-    <table class="striped">
-        <colgroup>
-            <col width="200">
-        </colgroup>
-        <tbody>
-            <tr>
-                <td>Hostname:</td>
-                <td><b>''' + HOSTNAME + '''</b></td>
-            </tr>
-            <tr>
-                <td>Zone:</td>
-                <td><b>''' + ZONE + '''</b></td>
-            </tr>
-            <tr>
-                <td>Template:</td>
-                <td><b>''' + TEMPLATE + '''</b></td>
-            </tr>
-            <tr>
-                <td>Current load:</td>
-                <td><span class="btn ''' + ('red' if WORKING else 'green') + '''"">''' + ('high' if WORKING else 'none') + '''</span></td>
-            </tr>
-            <tr>
-                <td>Health status:</td>
-                <td><span class="btn ''' + ('green' if HEALTHY else 'red') + '''">''' + ('healthy' if HEALTHY else 'unhealthy') + '''</span></td>
-            </tr>
-            <tr>
-                <td>Actions:</td>
-                <td>
-                    <a class="btn blue" href="/''' + ('makeUnhealthy' if HEALTHY else 'makeHealthy') + '''">Make ''' + ('unhealthy' if HEALTHY else 'healthy') + '''</a>
-                    <a class="btn blue" href="/''' + ('stop' if WORKING else 'start') + '''Load">''' + ('Stop' if WORKING else 'Start') + ''' load</a>
-                    <a class="btn blue" href="/health">Check health</a>
-                </td>
-            </tr>
-        </tbody>
-    </table>
-</body>
-</html>
-'''
-        self.wfile.write(html.encode('UTF-8'))
-        self.wfile.close()
+            self.send_response(200 if HEALTHY else 500)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            html = env.get_template('index.jinja2').render(hostname=HOSTNAME,
+                                                           zone=ZONE,
+                                                           template=TEMPLATE,
+                                                           healthy=HEALTHY)
+            self.wfile.write(html.encode('UTF-8'))
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -149,7 +81,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 try:
-    server = ThreadedHTTPServer(('', PORT_NUMBER), myHandler)
+    server = ThreadedHTTPServer(('', PORT_NUMBER), request_handler)
     print('Started httpserver on port %s' % PORT_NUMBER)
     server.serve_forever()
 
